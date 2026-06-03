@@ -1,132 +1,78 @@
 ---
 title: "Hydrex Plugin"
-description: "Skill plugin reference for swapping and providing liquidity on Hydrex through Base MCP."
+description: "Swapping and concentrated-liquidity on Hydrex via local prepare server → send_calls on Base."
+tags: [dex, swap, liquidity, yield]
+name: hydrex
+version: 0.2.0
+integration: http-api
+chains: [base]
+requires:
+  shell: none
+  allowlist: []
+  externalMcp: null
+  cliPackage: null
+auth: none
+risk: [slippage, irreversible]
 ---
 
 # Hydrex Plugin
 
-> Complete the short Base MCP onboarding flow defined in `SKILL.md` before calling any Hydrex endpoint. The user's wallet address — required as `from` or `recipient` in every prepare call — is fetched lazily when needed.
+> [!IMPORTANT]
+> Run Base MCP onboarding first (see SKILL.md). Obtain the user's wallet address via `get_wallets` — it is required as `from` or `recipient` in every prepare call. The Hydrex prepare server must be running locally before any write operations.
 
-Hydrex is an Omni-Liquidity MetaDEX on Base — concentrated-liquidity swaps aggregated across 0x, OpenOcean, OKX, and KyberSwap, plus liquidity positions that earn fees and rewards automatically. Use the prepare server to fetch unsigned calldata, then execute via `send_calls`.
+## Overview
 
-**Important — liquidity = staking on Hydrex.** Adding liquidity via `/prepare/add-liquidity` creates an active earning position immediately. There is no separate gauge deposit step. Removing liquidity via `/prepare/remove-liquidity` fully exits the position.
+Hydrex is an Omni-Liquidity MetaDEX on Base — concentrated-liquidity swaps aggregated across 0x, OpenOcean, OKX, and KyberSwap, plus liquidity positions that earn fees and rewards automatically. Adding liquidity creates an active earning position immediately; there is no separate staking step. The plugin calls a local prepare server (`http://localhost:3000`) to fetch unsigned calldata, then submits via `send_calls` on Base mainnet (`chainId: 8453`).
 
-**Chain:** Base mainnet (`chainId: 8453` / `"chain": "base"`).
+## Surface Routing
 
-**Prerequisite:** The Hydrex prepare server (`http://localhost:3000` by default) must be running. It is not on the Base MCP `web_request` allowlist. Construct all prepare URLs as GET requests with parameters in the query string. If `web_request` is unavailable, ask the user to open the URL in a browser, paste the JSON response into chat, then continue with `send_calls`.
+| Capability | Harness surface (Cursor, Claude Code, Codex) | Chat-only surface (Claude.ai, ChatGPT) |
+|---|---|---|
+| Read state (quote, positions, portfolio) | Harness HTTP tool → `GET localhost:3000/state/*` | User-paste fallback: construct full URL, ask user to open in browser and paste JSON response |
+| Prepare calldata (swap, add/remove liquidity) | Harness HTTP tool → `GET localhost:3000/prepare/*` | User-paste fallback: same as above |
+| Submit transaction | `send_calls` (Base MCP) | `send_calls` (Base MCP) |
 
-**Approval UX:** After `send_calls` returns, present the approval link and immediately call `get_request_status(requestId)` to poll automatically — do not ask the user to type anything. See `../references/approval-mode.md`.
+The prepare server (`http://localhost:3000`) is not on the Base MCP `web_request` allowlist. On chat-only surfaces, construct the full GET URL with all query parameters and ask the user to open it in a browser, paste the JSON response into chat, then continue with `send_calls`.
 
----
+## Endpoints
 
-## Orchestration patterns
+**Base URL:** `http://localhost:3000`
 
-### Swap pattern
+### GET /health
 
-```
-1.  get_wallets                              → address
-2.  GET /state/quote?tokenIn=...&tokenOut=...&amount=...&recipient=<address>
-      → show user: amountOut (human-readable), priceImpact, source
-      → if priceImpact > 5%, warn user and ask to confirm before proceeding
-3.  GET /prepare/swap?tokenIn=...&tokenOut=...&amount=...&recipient=<address>
-      → transactions[]
-4.  send_calls(chain="base", calls from transactions[])
-      → tell user: "Please approve the transaction using the link above."
-5.  get_request_status(requestId) — poll automatically until success or failed
-      → report outcome; do NOT ask user to type anything
-```
-
-### Add liquidity pattern (enter a position / stake)
-
-```
-1.  get_wallets                              → address
-2.  GET /state/positions?address=<address>   → show existing positions for context
-3.  Confirm with user: pool address, token pair, amounts, price range (or use default ±20%)
-4.  GET /prepare/add-liquidity?from=<address>&pool=<pool>&token0=<t0>&token1=<t1>
-        &decimals0=<d0>&decimals1=<d1>&amount0=<a0>&amount1=<a1>
-        [&priceLower=<p>&priceUpper=<p>]
-      → transactions: [approve-token0, approve-token1, mint]
-      → show user: position.tickLower, position.tickUpper, position.amount0, position.amount1
-5.  send_calls(chain="base", calls from transactions[])
-      → tell user: "Please approve both token allowances and the mint in the link above."
-6.  get_request_status(requestId) — poll automatically until success or failed
-```
-
-> Price range guidance: if the user does not specify a range, default to ±20% of current pool price and
-> tell them: "I'm using a ±20% price range around the current price. You can specify a tighter or wider
-> range if you prefer."
-
-### Remove liquidity pattern (exit a position / unstake)
-
-```
-1.  get_wallets                              → address
-2.  GET /state/positions?address=<address>   → list open positions with positionId values
-3.  Confirm which positionId and what percentage to remove (default: 100%)
-4.  GET /prepare/remove-liquidity?from=<address>&positionId=<id>&pool=<pool>
-        &decimals0=<d0>&decimals1=<d1>[&liquidityPercent=<pct>]
-      → transactions: [remove-liquidity]
-5.  send_calls(chain="base", calls from transactions[])
-      → tell user: "Please approve the transaction using the link above."
-6.  get_request_status(requestId) — poll automatically until success or failed
-```
+Response: `{ "ok": true, "service": "hydrex-base-skill-server", "chainId": 8453 }`
 
 ---
 
-## Read endpoints
-
-**Base URL:** `http://localhost:3000` (or wherever the prepare server is deployed)
-
-### Health check
-
-```
-GET /health
-```
-
-Response:
-```json
-{ "ok": true, "service": "hydrex-base-skill-server", "chainId": 8453 }
-```
-
----
-
-### Swap quote
-
-```
-GET /state/quote
-```
+### GET /state/quote
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `tokenIn` | address | ✓ | Input token contract address |
 | `tokenOut` | address | ✓ | Output token contract address |
-| `amount` | string (wei) | ✓ | Input amount in raw units (wei) |
+| `amount` | string (wei) | ✓ | Input amount in raw units |
 | `recipient` | address | ✓ | Wallet that receives output tokens |
 | `slippage` | number | — | Slippage tolerance in bps (default: 50 = 0.5%) |
-| `source` | string | — | Force a specific aggregator: `ZEROX`, `OPENOCEAN`, `OKX`, `KYBERSWAP` |
+| `source` | string | — | Force aggregator: `ZEROX`, `OPENOCEAN`, `OKX`, `KYBERSWAP` |
 
-Response shape:
+Response:
 ```json
 {
   "ok": true,
   "data": {
-    "tokenIn": "0x...",
-    "tokenOut": "0x...",
-    "amountIn": "1000000",
-    "amountOut": "412345678901234",
-    "source": "ZEROX",
-    "priceImpact": "0.12",
-    "to": "0x...",
-    "data": "0x...",
-    "value": "0x0"
+    "tokenIn": "0x...", "tokenOut": "0x...",
+    "amountIn": "1000000", "amountOut": "412345678901234",
+    "source": "ZEROX", "priceImpact": "0.12",
+    "to": "0x...", "data": "0x...", "value": "0x0"
   }
 }
 ```
 
-Always show the user `amountOut` (converted to human-readable) and `priceImpact` before executing.
+Always show `amountOut` (human-readable) and `priceImpact` to the user before executing. Warn and require confirmation if `priceImpact > 5%`.
 
 ---
 
-### Portfolio / balances
+### GET /state/portfolio
 
 ```
 GET /state/portfolio?address=<walletAddress>
@@ -136,24 +82,13 @@ Returns token balances and LP positions for the wallet.
 
 ---
 
-### Trade history
-
-```
-GET /state/trade-history?address=<walletAddress>
-```
-
-Returns past swaps executed through Hydrex for the wallet.
-
----
-
-### Open liquidity positions
+### GET /state/positions
 
 ```
 GET /state/positions?address=<walletAddress>
 ```
 
-Returns all open concentrated liquidity positions owned by the wallet,
-read directly from the NonfungiblePositionManager on-chain.
+Returns all open concentrated liquidity positions owned by the wallet (read from NonfungiblePositionManager on-chain).
 
 Response shape:
 ```json
@@ -163,14 +98,10 @@ Response shape:
   "positions": [
     {
       "positionId": "12345",
-      "token0": "0x...",
-      "token1": "0x...",
-      "fee": 500,
-      "tickLower": -887220,
-      "tickUpper": 887220,
+      "token0": "0x...", "token1": "0x...",
+      "fee": 500, "tickLower": -887220, "tickUpper": 887220,
       "liquidity": "1500000000000000",
-      "tokensOwed0": "0",
-      "tokensOwed1": "0"
+      "tokensOwed0": "0", "tokensOwed1": "0"
     }
   ]
 }
@@ -180,24 +111,17 @@ Use `positionId` with `/prepare/remove-liquidity`.
 
 ---
 
-## Prepare endpoints
-
-All prepare endpoints return the ordered-batch shape:
-
-```json
-{
-  "ok": true,
-  "transactions": [
-    { "step": "<label>", "to": "0x...", "data": "0x...", "value": "0x0", "chainId": 8453 }
-  ]
-}
-```
-
-### Prepare swap
+### GET /state/trade-history
 
 ```
-GET /prepare/swap
+GET /state/trade-history?address=<walletAddress>
 ```
+
+Returns past swaps executed through Hydrex for the wallet.
+
+---
+
+### GET /prepare/swap
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -219,109 +143,19 @@ Response:
 {
   "ok": true,
   "quote": {
-    "tokenIn": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    "tokenOut": "0x4200000000000000000000000000000000000006",
-    "amountIn": "1500000",
-    "amountOut": "618522345678901",
-    "source": "ZEROX",
-    "priceImpact": "0.08"
+    "tokenIn": "0x...", "tokenOut": "0x...",
+    "amountIn": "1500000", "amountOut": "618522345678901",
+    "source": "ZEROX", "priceImpact": "0.08"
   },
   "transactions": [
-    {
-      "step": "swap",
-      "to": "0x<SwapRouter>",
-      "data": "0x<encodedCalldata>",
-      "value": "0x0",
-      "chainId": 8453
-    }
+    { "step": "swap", "to": "0x<SwapRouter>", "data": "0x<calldata>", "value": "0x0", "chainId": 8453 }
   ]
 }
 ```
 
 ---
 
-### Prepare stake
-
-```
-GET /prepare/stake
-```
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `from` | address | ✓ | Wallet address holding LP tokens |
-| `gauge` | address | ✓ | Gauge contract address to deposit into |
-| `lpToken` | address | ✓ | LP token contract address |
-| `amount` | string | ✓ | Human-readable LP token amount (e.g. `"1.0"`) |
-| `decimals` | number | — | LP token decimals (default: 18) |
-
-Response — two transactions, always in this order:
-```json
-{
-  "ok": true,
-  "transactions": [
-    { "step": "approve", "to": "0x<lpToken>",  "data": "0x<approveCalldata>", "value": "0x0", "chainId": 8453 },
-    { "step": "stake",   "to": "0x<gauge>",    "data": "0x<depositCalldata>", "value": "0x0", "chainId": 8453 }
-  ]
-}
-```
-
-> The approve must be included in the same `send_calls` batch as the stake so they execute atomically in a single user approval.
-
----
-
-### Prepare unstake
-
-```
-GET /prepare/unstake
-```
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `from` | address | ✓ | Wallet address with staked LP tokens |
-| `gauge` | address | ✓ | Gauge contract address |
-| `amount` | string | ✓ | Human-readable LP token amount to withdraw |
-| `decimals` | number | — | LP token decimals (default: 18) |
-
-Response:
-```json
-{
-  "ok": true,
-  "transactions": [
-    { "step": "unstake", "to": "0x<gauge>", "data": "0x<withdrawCalldata>", "value": "0x0", "chainId": 8453 }
-  ]
-}
-```
-
----
-
-### Prepare claim rewards
-
-```
-GET /prepare/claim
-```
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `from` | address | ✓ | Wallet address to receive rewards |
-| `gauge` | address | ✓ | Gauge contract address |
-
-Response:
-```json
-{
-  "ok": true,
-  "transactions": [
-    { "step": "claim", "to": "0x<gauge>", "data": "0x<getRewardCalldata>", "value": "0x0", "chainId": 8453 }
-  ]
-}
-```
-
----
-
-### Prepare add liquidity
-
-```
-GET /prepare/add-liquidity
-```
+### GET /prepare/add-liquidity
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -333,8 +167,8 @@ GET /prepare/add-liquidity
 | `decimals1` | number | — | token1 decimals (default: 18) |
 | `amount0` | string | ✓ | Desired token0 amount, human-readable |
 | `amount1` | string | ✓ | Desired token1 amount, human-readable |
-| `priceLower` | number | — | Lower price bound (token1 per token0). Defaults to −20% of current price |
-| `priceUpper` | number | — | Upper price bound (token1 per token0). Defaults to +20% of current price |
+| `priceLower` | number | — | Lower price bound (token1/token0). Defaults to −20% of current price |
+| `priceUpper` | number | — | Upper price bound (token1/token0). Defaults to +20% of current price |
 | `slippage` | number | — | Slippage in bps (default: 50) |
 
 Response — three transactions, always in this order:
@@ -350,13 +184,11 @@ Response — three transactions, always in this order:
 }
 ```
 
+If the user does not specify a price range, default to ±20% of the current pool price and tell them: "I'm using a ±20% price range around the current price. You can specify a tighter or wider range if you prefer."
+
 ---
 
-### Prepare remove liquidity
-
-```
-GET /prepare/remove-liquidity
-```
+### GET /prepare/remove-liquidity
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -380,9 +212,117 @@ Response:
 
 ---
 
-## `send_calls` mapping
+### GET /prepare/stake
 
-Convert any `transactions` array from a prepare endpoint into `send_calls`:
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `from` | address | ✓ | Wallet address holding LP tokens |
+| `gauge` | address | ✓ | Gauge contract address to deposit into |
+| `lpToken` | address | ✓ | LP token contract address |
+| `amount` | string | ✓ | Human-readable LP token amount (e.g. `"1.0"`) |
+| `decimals` | number | — | LP token decimals (default: 18) |
+
+Response — two transactions, always in this order:
+```json
+{
+  "ok": true,
+  "transactions": [
+    { "step": "approve", "to": "0x<lpToken>", "data": "0x...", "value": "0x0", "chainId": 8453 },
+    { "step": "stake",   "to": "0x<gauge>",   "data": "0x...", "value": "0x0", "chainId": 8453 }
+  ]
+}
+```
+
+---
+
+### GET /prepare/unstake
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `from` | address | ✓ | Wallet address with staked LP tokens |
+| `gauge` | address | ✓ | Gauge contract address |
+| `amount` | string | ✓ | Human-readable LP token amount to withdraw |
+| `decimals` | number | — | LP token decimals (default: 18) |
+
+Response:
+```json
+{
+  "ok": true,
+  "transactions": [
+    { "step": "unstake", "to": "0x<gauge>", "data": "0x...", "value": "0x0", "chainId": 8453 }
+  ]
+}
+```
+
+---
+
+### GET /prepare/claim
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `from` | address | ✓ | Wallet address to receive rewards |
+| `gauge` | address | ✓ | Gauge contract address |
+
+Response:
+```json
+{
+  "ok": true,
+  "transactions": [
+    { "step": "claim", "to": "0x<gauge>", "data": "0x...", "value": "0x0", "chainId": 8453 }
+  ]
+}
+```
+
+All prepare endpoints return `{ "ok": false, "error": "..." }` on failure — surface the `error` field to the user and do not call `send_calls`.
+
+## Orchestration
+
+### Swap
+
+```
+1. get_wallets                                → address
+2. GET /state/quote?tokenIn=...&tokenOut=...&amount=...&recipient=<address>
+     → show amountOut (human-readable) and priceImpact
+     → if priceImpact > 5%, warn user and require confirmation
+3. GET /prepare/swap?tokenIn=...&tokenOut=...&amount=...&recipient=<address>
+     → transactions[]
+4. send_calls(chain="base", calls=[{to, value, data} for each tx])
+5. get_request_status(requestId) — poll automatically until success or failed
+     → report outcome; do NOT ask user to type anything
+```
+
+### Add liquidity (enter a position)
+
+```
+1. get_wallets                                → address
+2. GET /state/positions?address=<address>     → show existing positions for context
+3. Confirm: pool address, token pair, amounts, price range (or default ±20%)
+4. GET /prepare/add-liquidity?from=<address>&pool=<pool>&token0=<t0>&token1=<t1>
+       &decimals0=<d0>&decimals1=<d1>&amount0=<a0>&amount1=<a1>
+       [&priceLower=<p>&priceUpper=<p>]
+     → show position.tickLower, tickUpper, amount0, amount1 to user before proceeding
+5. send_calls(chain="base", calls from transactions[])
+6. get_request_status(requestId) — poll automatically until success or failed
+```
+
+### Remove liquidity (exit a position)
+
+```
+1. get_wallets                                → address
+2. GET /state/positions?address=<address>     → list positionId values
+3. Confirm which positionId and what percentage to remove (default: 100%)
+4. GET /prepare/remove-liquidity?from=<address>&positionId=<id>&pool=<pool>
+       &decimals0=<d0>&decimals1=<d1>[&liquidityPercent=<pct>]
+     → transactions[]
+5. send_calls(chain="base", calls from transactions[])
+6. get_request_status(requestId) — poll automatically until success or failed
+```
+
+## Submission
+
+Target tool: **`send_calls`**
+
+Map every `transactions[]` array from a prepare endpoint into `send_calls`:
 
 ```json
 {
@@ -393,28 +333,65 @@ Convert any `transactions` array from a prepare endpoint into `send_calls`:
 }
 ```
 
-Multiple transactions (e.g. approve + stake) are passed as a single `calls` array — Base MCP executes them atomically in one user approval.
+Pass all transactions in a single `calls` array — Base MCP executes them atomically in one user approval. After `send_calls` returns, immediately call `get_request_status(requestId)` and poll until the status is `success` or `failed`. Do not ask the user to type or paste anything during polling. See [approval-mode.md](../references/approval-mode.md).
 
----
+## Example Prompts
 
-## Well-known token addresses (Base mainnet)
+**"Swap 5 USDC for ETH on Hydrex"**
+1. `get_wallets` → wallet address
+2. `GET /state/quote?tokenIn=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913&tokenOut=0x4200000000000000000000000000000000000006&amount=5000000&recipient=<address>` → show amountOut, priceImpact
+3. `GET /prepare/swap?tokenIn=0x833589...&tokenOut=0x420000...&amount=5&decimals=6&recipient=<address>&slippage=50`
+4. `send_calls(chain="base", calls=[swap tx])`
+5. Poll `get_request_status` → report outcome
+
+**"Show my Hydrex liquidity positions"**
+1. `get_wallets` → wallet address
+2. `GET /state/positions?address=<address>` → display each positionId, token pair, tick range, and liquidity
+
+**"Add liquidity to the USDC/ETH pool on Hydrex — 100 USDC and 0.04 ETH"**
+1. `get_wallets` → wallet address
+2. `GET /state/positions?address=<address>` → existing position context
+3. Confirm pool address; default price range to ±20% of current price and inform user of the range used
+4. `GET /prepare/add-liquidity?from=<address>&pool=<pool>&token0=<USDC>&token1=<WETH>&decimals0=6&decimals1=18&amount0=100&amount1=0.04`
+5. Show returned `position` (tickLower, tickUpper, amounts) to user
+6. `send_calls(chain="base", calls=[approve-token0, approve-token1, mint])`
+7. Poll `get_request_status` → report outcome
+
+**"Remove 50% of liquidity from Hydrex position #12345"** *(chat-only surface fallback)*
+1. `get_wallets` → wallet address
+2. `web_request` cannot reach `localhost:3000` → construct the full URL and ask the user to open it in a browser and paste the JSON response into chat
+3. On receiving JSON, `send_calls(chain="base", calls from transactions[])`
+4. Poll `get_request_status` → report outcome
+
+## Risks & Warnings
+
+- **Slippage** — swap and liquidity operations fill at market price; actual output can differ from the quote. Default tolerance is 50 bps (0.5%). Always check `priceImpact` before executing; if `priceImpact > 5%`, warn the user and wait for explicit confirmation. Never auto-raise slippage.
+- **Irreversible** — onchain transactions cannot be undone once approved. Always show the user the full operation details (amounts, price range for LP positions, positionId for removals) and confirm before calling `send_calls`.
+
+## Notes
+
+### Well-known token addresses (Base mainnet)
 
 | Symbol | Address | Decimals |
 |---|---|---|
 | USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | 6 |
 | WETH | `0x4200000000000000000000000000000000000006` | 18 |
-| ETH (native) | use `value` field, no `tokenIn` address needed | 18 |
+| ETH (native) | Use the `value` field; no `tokenIn` address needed | 18 |
 
-> For other tokens, look up the address via `GET /state/quote` error messages or ask the user to provide the contract address.
+For other tokens, look up the address via `GET /state/quote` error messages or ask the user to supply the contract address.
 
----
-
-## Error handling
+### Error handling
 
 | Condition | Action |
 |---|---|
-| `get_wallets` returns no wallet | Tell user to connect their Base Account and try again |
-| `/state/quote` returns `priceImpact > 5%` | Warn user about high price impact before proceeding |
-| Prepare endpoint returns `ok: false` | Surface the `error` field to the user; do not call `send_calls` |
+| `get_wallets` returns no wallet | Tell user to connect their Base Account and retry |
+| `/state/quote` returns `priceImpact > 5%` | Warn user; require confirmation before proceeding |
+| Prepare endpoint returns `ok: false` | Surface the `error` field; do not call `send_calls` |
 | `send_calls` approval rejected | Inform user the transaction was cancelled; offer to retry |
 | `get_request_status` shows failure | Parse the failure reason and suggest next steps |
+
+### Liquidity notes
+
+- Adding liquidity creates a concentrated liquidity position that earns fees and rewards immediately — no separate gauge deposit step is required.
+- Removing liquidity fully exits the position and returns both tokens to the wallet.
+- The `positionId` is the NFT tokenId from the NonfungiblePositionManager; always fetch current positions via `/state/positions` before a remove.
