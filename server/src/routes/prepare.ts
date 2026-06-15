@@ -108,10 +108,10 @@ router.get("/swap", async (req: Request, res: Response) => {
 
   const amountWei = parseUnits(amount, decimals).toString();
   const params = new URLSearchParams({
-    tokenIn,
-    tokenOut,
+    fromTokenAddress: tokenIn,
+    toTokenAddress: tokenOut,
     amount: amountWei,
-    recipient,
+    taker: recipient,
     chainId: String(CHAIN_ID),
     slippage: String(slippage),
   });
@@ -127,22 +127,24 @@ router.get("/swap", async (req: Request, res: Response) => {
     }
 
     const quote = (await upstream.json()) as {
-      tokenIn?: string;
-      tokenOut?: string;
       amountIn?: string;
       amountOut: string;
       source?: string;
       priceImpact?: number;
-      to: string;
-      data: string;
-      value?: string;
+      transaction: {
+        to: string;
+        data: string;
+        value?: string;
+      };
     };
+
+    const { to, data, value } = quote.transaction;
 
     return res.json({
       ok: true,
       quote: {
-        tokenIn: quote.tokenIn ?? tokenIn,
-        tokenOut: quote.tokenOut ?? tokenOut,
+        tokenIn,
+        tokenOut,
         amountIn: quote.amountIn ?? amountWei,
         amountOut: quote.amountOut,
         source: quote.source,
@@ -151,9 +153,9 @@ router.get("/swap", async (req: Request, res: Response) => {
       transactions: [
         {
           step: "swap",
-          to: quote.to,
-          data: quote.data,
-          value: quote.value ?? "0x0",
+          to,
+          data,
+          value: value ? `0x${BigInt(value).toString(16)}` : "0x0",
           chainId: CHAIN_ID,
         },
       ],
