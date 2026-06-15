@@ -149,7 +149,13 @@ Response:
   },
   "transactions": [
     { "step": "swap", "to": "0x<SwapRouter>", "data": "0x<calldata>", "value": "0x0", "chainId": 8453 }
-  ]
+  ],
+  "sendCalls": {
+    "chain": "base",
+    "calls": [
+      { "to": "0x<SwapRouter>", "value": "0x0", "data": "0x<calldata>" }
+    ]
+  }
 }
 ```
 
@@ -285,8 +291,8 @@ All prepare endpoints return `{ "ok": false, "error": "..." }` on failure — su
      → show amountOut (human-readable) and priceImpact
      → if priceImpact > 5%, warn user and require confirmation
 3. GET /prepare/swap?tokenIn=...&tokenOut=...&amount=...&recipient=<address>
-     → transactions[]
-4. send_calls(chain="base", calls=[{to, value, data} for each tx])
+     → sendCalls
+4. send_calls(response.sendCalls)
 5. get_request_status(requestId) — poll automatically until success or failed
      → report outcome; do NOT ask user to type anything
 ```
@@ -301,7 +307,7 @@ All prepare endpoints return `{ "ok": false, "error": "..." }` on failure — su
        &decimals0=<d0>&decimals1=<d1>&amount0=<a0>&amount1=<a1>
        [&priceLower=<p>&priceUpper=<p>]
      → show position.tickLower, tickUpper, amount0, amount1 to user before proceeding
-5. send_calls(chain="base", calls from transactions[])
+5. send_calls(response.sendCalls)
 6. get_request_status(requestId) — poll automatically until success or failed
 ```
 
@@ -313,8 +319,8 @@ All prepare endpoints return `{ "ok": false, "error": "..." }` on failure — su
 3. Confirm which positionId and what percentage to remove (default: 100%)
 4. GET /prepare/remove-liquidity?from=<address>&positionId=<id>&pool=<pool>
        &decimals0=<d0>&decimals1=<d1>[&liquidityPercent=<pct>]
-     → transactions[]
-5. send_calls(chain="base", calls from transactions[])
+     → sendCalls
+5. send_calls(response.sendCalls)
 6. get_request_status(requestId) — poll automatically until success or failed
 ```
 
@@ -322,7 +328,7 @@ All prepare endpoints return `{ "ok": false, "error": "..." }` on failure — su
 
 Target tool: **`send_calls`**
 
-Map every `transactions[]` array from a prepare endpoint into `send_calls`:
+Use the `sendCalls` object from a prepare endpoint directly:
 
 ```json
 {
@@ -333,7 +339,7 @@ Map every `transactions[]` array from a prepare endpoint into `send_calls`:
 }
 ```
 
-Pass all transactions in a single `calls` array — Base MCP executes them atomically in one user approval. After `send_calls` returns, immediately call `get_request_status(requestId)` and poll until the status is `success` or `failed`. Do not ask the user to type or paste anything during polling. See [approval-mode.md](../references/approval-mode.md).
+Do not manually copy, shorten, summarize, or reconstruct `calls[].data`. If `sendCalls` is missing, map `transactions[]` mechanically and verify each `data` value starts with `0x`, contains only hex characters, and has an even hex length. Pass all calls in a single `calls` array — Base MCP executes them atomically in one user approval. After `send_calls` returns, immediately call `get_request_status(requestId)` and poll until the status is `success` or `failed`. Do not ask the user to type or paste anything during polling. See [approval-mode.md](../references/approval-mode.md).
 
 ## Example Prompts
 

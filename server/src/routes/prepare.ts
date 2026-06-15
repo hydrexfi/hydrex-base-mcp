@@ -40,10 +40,72 @@ import { fetchPool, fetchPosition, priceToTick, NFPM_ADDRESS } from "../lib/pool
 
 const router = Router();
 
+const addressPattern = /^0x[0-9a-fA-F]{40}$/;
+
 const addressSchema = z
   .string()
-  .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address")
+  .regex(addressPattern, "Invalid EVM address")
   .transform((v) => v as Address);
+
+type PreparedTransaction = {
+  step: string;
+  to: Address;
+  data: string;
+  value: string;
+  chainId: typeof CHAIN_ID;
+};
+
+type SendCallsPayload = {
+  chain: "base";
+  calls: Array<{
+    to: Address;
+    value: string;
+    data: string;
+  }>;
+};
+
+const hexSchema = /^0x[0-9a-fA-F]*$/;
+const hexValueSchema = /^0x[0-9a-fA-F]+$/;
+
+function assertHexData(data: string, step: string): void {
+  if (!hexSchema.test(data)) {
+    throw new Error(`${step} calldata must be a 0x-prefixed hex string`);
+  }
+  if ((data.length - 2) % 2 !== 0) {
+    throw new Error(`${step} calldata must have an even hex length`);
+  }
+}
+
+function assertHexValue(value: string, step: string): void {
+  if (!hexValueSchema.test(value)) {
+    throw new Error(`${step} value must be a 0x-prefixed hex string`);
+  }
+}
+
+function assertAddress(value: string, step: string): void {
+  if (!addressPattern.test(value)) {
+    throw new Error(`${step} target must be an EVM address`);
+  }
+}
+
+function buildPreparePayload(transactions: PreparedTransaction[]): {
+  transactions: PreparedTransaction[];
+  sendCalls: SendCallsPayload;
+} {
+  for (const tx of transactions) {
+    assertAddress(tx.to, tx.step);
+    assertHexData(tx.data, tx.step);
+    assertHexValue(tx.value, tx.step);
+  }
+
+  return {
+    transactions,
+    sendCalls: {
+      chain: "base",
+      calls: transactions.map(({ to, value, data }) => ({ to, value, data })),
+    },
+  };
+}
 
 // ─── ABI fragments for gauge interactions ────────────────────────────────────
 
@@ -139,6 +201,15 @@ router.get("/swap", async (req: Request, res: Response) => {
     };
 
     const { to, data, value } = quote.transaction;
+    const transactions: PreparedTransaction[] = [
+      {
+        step: "swap",
+        to: to as Address,
+        data,
+        value: value ? `0x${BigInt(value).toString(16)}` : "0x0",
+        chainId: CHAIN_ID,
+      },
+    ];
 
     return res.json({
       ok: true,
@@ -150,15 +221,7 @@ router.get("/swap", async (req: Request, res: Response) => {
         source: quote.source,
         priceImpact: quote.priceImpact,
       },
-      transactions: [
-        {
-          step: "swap",
-          to,
-          data,
-          value: value ? `0x${BigInt(value).toString(16)}` : "0x0",
-          chainId: CHAIN_ID,
-        },
-      ],
+      ...buildPreparePayload(transactions),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -189,22 +252,23 @@ router.get("/claim", async (req: Request, res: Response) => {
   }
 
   const { from, gauge } = parsed.data;
+  const transactions: PreparedTransaction[] = [
+    {
+      step: "claim",
+      to: gauge,
+      data: encodeFunctionData({
+        abi: gaugeGetRewardAbi,
+        functionName: "getReward",
+        args: [from],
+      }),
+      value: "0x0",
+      chainId: CHAIN_ID,
+    },
+  ];
 
   return res.json({
     ok: true,
-    transactions: [
-      {
-        step: "claim",
-        to: gauge,
-        data: encodeFunctionData({
-          abi: gaugeGetRewardAbi,
-          functionName: "getReward",
-          args: [from],
-        }),
-        value: "0x0",
-        chainId: CHAIN_ID,
-      },
-    ],
+    ...buildPreparePayload(transactions),
   });
 });
 
@@ -345,6 +409,29 @@ router.get("/add-liquidity", async (req: Request, res: Response) => {
       functionName: "approve",
       args: [NFPM_ADDRESS, amount1Raw],
     });
+    const transactions: PreparedTransaction[] = [
+      {
+        step: "approve-token0",
+        to: token0Address,
+        data: approveToken0,
+        value: "0x0",
+        chainId: CHAIN_ID,
+      },
+      {
+        step: "approve-token1",
+        to: token1Address,
+        data: approveToken1,
+        value: "0x0",
+        chainId: CHAIN_ID,
+      },
+      {
+        step: "mint",
+        to: NFPM_ADDRESS,
+        data: encodeNfpmCalldata(calldata),
+        value: `0x${BigInt(value).toString(16)}`,
+        chainId: CHAIN_ID,
+      },
+    ];
 
     return res.json({
       ok: true,
@@ -354,29 +441,7 @@ router.get("/add-liquidity", async (req: Request, res: Response) => {
         amount0: position.amount0.toSignificant(6),
         amount1: position.amount1.toSignificant(6),
       },
-      transactions: [
-        {
-          step: "approve-token0",
-          to: token0Address,
-          data: approveToken0,
-          value: "0x0",
-          chainId: CHAIN_ID,
-        },
-        {
-          step: "approve-token1",
-          to: token1Address,
-          data: approveToken1,
-          value: "0x0",
-          chainId: CHAIN_ID,
-        },
-        {
-          step: "mint",
-          to: NFPM_ADDRESS,
-          data: encodeNfpmCalldata(calldata),
-          value: `0x${BigInt(value).toString(16)}`,
-          chainId: CHAIN_ID,
-        },
-      ],
+      ...buildPreparePayload(transactions),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -475,18 +540,19 @@ router.get("/remove-liquidity", async (req: Request, res: Response) => {
           recipient: from,
         },
       });
+    const transactions: PreparedTransaction[] = [
+      {
+        step: "remove-liquidity",
+        to: NFPM_ADDRESS,
+        data: encodeNfpmCalldata(calldata),
+        value: `0x${BigInt(value).toString(16)}`,
+        chainId: CHAIN_ID,
+      },
+    ];
 
     return res.json({
       ok: true,
-      transactions: [
-        {
-          step: "remove-liquidity",
-          to: NFPM_ADDRESS,
-          data: encodeNfpmCalldata(calldata),
-          value: `0x${BigInt(value).toString(16)}`,
-          chainId: CHAIN_ID,
-        },
-      ],
+      ...buildPreparePayload(transactions),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

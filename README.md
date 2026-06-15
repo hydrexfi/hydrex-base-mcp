@@ -170,9 +170,17 @@ All prepare endpoints return ordered-batch transactions:
   "ok": true,
   "transactions": [
     { "step": "<label>", "to": "0x...", "data": "0x...", "value": "0x0", "chainId": 8453 }
-  ]
+  ],
+  "sendCalls": {
+    "chain": "base",
+    "calls": [
+      { "to": "0x...", "value": "0x0", "data": "0x..." }
+    ]
+  }
 }
 ```
+
+Use `sendCalls` directly with Base MCP `send_calls`. It is the same calldata from `transactions[]`, pre-shaped to avoid manually copying long hex strings.
 
 | Method | Path | Key params |
 |---|---|---|

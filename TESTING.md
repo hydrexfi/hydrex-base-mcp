@@ -43,6 +43,13 @@ curl http://localhost:3000/health
 # {"ok":true,"service":"hydrex-base-skill-server","chainId":8453}
 ```
 
+Verify prepare responses include a Base MCP-ready handoff payload:
+
+```bash
+curl -s "http://localhost:3000/prepare/swap?tokenIn=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913&tokenOut=0x4200000000000000000000000000000000000006&amount=1&decimals=6&recipient=0x0000000000000000000000000000000000000001&slippage=50" \
+  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s); const tx=j.transactions?.[0]; const call=j.sendCalls?.calls?.[0]; if(!j.ok) throw new Error(JSON.stringify(j.error)); if(j.sendCalls?.chain !== 'base') throw new Error('missing base sendCalls'); if(!tx || !call || tx.to !== call.to || tx.value !== call.value || tx.data !== call.data) throw new Error('sendCalls mismatch'); if(!/^0x[0-9a-fA-F]*$/.test(call.data) || (call.data.length - 2) % 2) throw new Error('invalid calldata'); console.log('sendCalls ok');})"
+```
+
 Keep this terminal open for the full testing session.
 
 ### 3 — Open the project root in Cursor
@@ -124,6 +131,7 @@ Always run the positions query first to get your `positionId` values. You can re
 | `base-mcp` shows disconnected | Restart Cursor; confirm you opened the repo root, not a subfolder |
 | Agent doesn't know Hydrex actions | Check that `.cursor/rules/hydrex.mdc` exists; start a fresh chat |
 | Prepare endpoint 500 errors | Check the `server/` terminal output; most common cause is a bad `BASE_RPC_URL` |
+| `send_calls` rejects odd-length hex | Re-fetch `/prepare/*` and submit `response.sendCalls` directly; do not copy or edit `calls[].data` |
 | Wallet popup never appears | Ensure a Coinbase Smart Wallet is set up; the popup appears on the first `send_calls` |
 | Port 3000 already in use | Set `PORT=3001` in `server/.env` and restart the server |
 
