@@ -296,7 +296,7 @@ All prepare endpoints return `{ "ok": false, "error": "..." }` on failure — su
      → if priceImpact > 5%, warn user and require confirmation
 3. GET /prepare/swap?tokenIn=...&tokenOut=...&amount=...&recipient=<address>
      → sendCalls (ERC-20 inputs may include approve-tokenIn before swap)
-4. send_calls(response.sendCalls)
+4. send_calls(response.sendCalls) immediately; do not reuse prepare payloads
 5. get_request_status(requestId) — poll automatically until success or failed
      → report outcome; do NOT ask user to type anything
 ```
@@ -342,6 +342,14 @@ Use the `sendCalls` object from a prepare endpoint directly:
   ]
 }
 ```
+
+Prepare responses are single-use. Submit `response.sendCalls` immediately after fetching it.
+
+For swaps:
+- If `sendCalls` contains `approve-tokenIn` and `swap`, submit the full batch together.
+- If an approval is submitted separately, discard the old prepare response. After approval confirms, call `/prepare/swap` again and submit the fresh `response.sendCalls`.
+- If `send_calls` fails or gas estimation reverts, do not retry the same payload. Fetch a new `/prepare/swap` response before retrying.
+- Do not reuse saved JSON files, transcript calldata, or earlier `sendCalls` objects.
 
 Do not manually copy, shorten, summarize, or reconstruct `calls[].data`. If `sendCalls` is missing, map `transactions[]` mechanically and verify each `data` value starts with `0x`, contains only hex characters, and has an even hex length. Pass all calls in a single `calls` array — Base MCP executes them atomically in one user approval. After `send_calls` returns, immediately call `get_request_status(requestId)` and poll until the status is `success` or `failed`. Do not ask the user to type or paste anything during polling. See [approval-mode.md](../references/approval-mode.md).
 
@@ -397,6 +405,7 @@ For other tokens, look up the address via `GET /state/quote` error messages or a
 | `get_wallets` returns no wallet | Tell user to connect their Base Account and retry |
 | `/state/quote` returns `priceImpact > 5%` | Warn user; require confirmation before proceeding |
 | Prepare endpoint returns `ok: false` | Surface the `error` field; do not call `send_calls` |
+| `send_calls` fails or gas estimation reverts | Discard the prepare response, fetch a fresh `/prepare/swap`, and retry only after user confirmation |
 | `send_calls` approval rejected | Inform user the transaction was cancelled; offer to retry |
 | `get_request_status` shows failure | Parse the failure reason and suggest next steps |
 

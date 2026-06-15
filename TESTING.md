@@ -57,6 +57,8 @@ curl -s "http://localhost:3000/prepare/swap?tokenIn=0x00000e7efa313f4e11bfff4324
   | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s); const steps=j.transactions?.map(t=>t.step).join(','); if(!j.ok) throw new Error(JSON.stringify(j.error)); if(steps !== 'approve-tokenIn,swap') throw new Error('expected approve-tokenIn,swap'); if(j.sendCalls?.calls?.length !== 2) throw new Error('expected two sendCalls'); console.log('swap approval ok');})"
 ```
 
+Treat every prepare response as single-use. Fetch `/prepare/swap` immediately before `send_calls`; if approval is submitted separately or a submission fails, discard the old response and fetch a fresh one before retrying.
+
 Keep this terminal open for the full testing session.
 
 ### 3 — Open the project root in Cursor
@@ -139,6 +141,7 @@ Always run the positions query first to get your `positionId` values. You can re
 | Agent doesn't know Hydrex actions | Check that `.cursor/rules/hydrex.mdc` exists; start a fresh chat |
 | Prepare endpoint 500 errors | Check the `server/` terminal output; most common cause is a bad `BASE_RPC_URL` |
 | `send_calls` rejects odd-length hex | Re-fetch `/prepare/*` and submit `response.sendCalls` directly; do not copy or edit `calls[].data` |
+| `send_calls` gas estimation reverts | Discard the prepare response, fetch fresh `/prepare/swap` calldata, and retry only after confirming with the user |
 | Wallet popup never appears | Ensure a Coinbase Smart Wallet is set up; the popup appears on the first `send_calls` |
 | Port 3000 already in use | Set `PORT=3001` in `server/.env` and restart the server |
 
