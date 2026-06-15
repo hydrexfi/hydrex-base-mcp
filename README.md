@@ -182,6 +182,8 @@ All prepare endpoints return ordered-batch transactions:
 
 Use `sendCalls` directly with Base MCP `send_calls`. It is the same calldata from `transactions[]`, pre-shaped to avoid manually copying long hex strings.
 
+For swaps, ERC-20 input tokens may include an `approve-tokenIn` transaction before the `swap` transaction when wallet allowance is too low. Native ETH swaps return the swap transaction only.
+
 | Method | Path | Key params |
 |---|---|---|
 | `GET` | `/prepare/swap` | `tokenIn`, `tokenOut`, `amount`, `decimals`, `recipient`, `slippage` |

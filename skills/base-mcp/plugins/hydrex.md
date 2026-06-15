@@ -148,16 +148,20 @@ Response:
     "source": "ZEROX", "priceImpact": "0.08"
   },
   "transactions": [
+    { "step": "approve-tokenIn", "to": "0x<TokenIn>", "data": "0x<approval>", "value": "0x0", "chainId": 8453 },
     { "step": "swap", "to": "0x<SwapRouter>", "data": "0x<calldata>", "value": "0x0", "chainId": 8453 }
   ],
   "sendCalls": {
     "chain": "base",
     "calls": [
+      { "to": "0x<TokenIn>", "value": "0x0", "data": "0x<approval>" },
       { "to": "0x<SwapRouter>", "value": "0x0", "data": "0x<calldata>" }
     ]
   }
 }
 ```
+
+`approve-tokenIn` is included only for ERC-20 input tokens when the wallet allowance is below the swap input amount. Native ETH swaps return the `swap` call only.
 
 ---
 
@@ -291,7 +295,7 @@ All prepare endpoints return `{ "ok": false, "error": "..." }` on failure — su
      → show amountOut (human-readable) and priceImpact
      → if priceImpact > 5%, warn user and require confirmation
 3. GET /prepare/swap?tokenIn=...&tokenOut=...&amount=...&recipient=<address>
-     → sendCalls
+     → sendCalls (ERC-20 inputs may include approve-tokenIn before swap)
 4. send_calls(response.sendCalls)
 5. get_request_status(requestId) — poll automatically until success or failed
      → report outcome; do NOT ask user to type anything

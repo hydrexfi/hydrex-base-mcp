@@ -36,7 +36,13 @@ import {
   nearestUsableTick,
 } from "@hydrexfi/hydrex-sdk";
 import { CHAIN_ID, ROUTER_API_BASE } from "../lib/constants";
-import { fetchPool, fetchPosition, priceToTick, NFPM_ADDRESS } from "../lib/pool";
+import {
+  fetchPool,
+  fetchPosition,
+  priceToTick,
+  NFPM_ADDRESS,
+  publicClient,
+} from "../lib/pool";
 
 const router = Router();
 
@@ -66,6 +72,10 @@ type SendCallsPayload = {
 
 const hexSchema = /^0x[0-9a-fA-F]*$/;
 const hexValueSchema = /^0x[0-9a-fA-F]+$/;
+const nativeTokenAddresses = new Set([
+  "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "0x0000000000000000000000000000000000000000",
+]);
 
 function assertHexData(data: string, step: string): void {
   if (!hexSchema.test(data)) {
@@ -107,9 +117,13 @@ function buildPreparePayload(transactions: PreparedTransaction[]): {
   };
 }
 
-// ─── ABI fragments for gauge interactions ────────────────────────────────────
+function isNativeToken(address: Address): boolean {
+  return nativeTokenAddresses.has(address.toLowerCase());
+}
 
-const erc20ApproveAbi = [
+// ─── ABI fragments for ERC-20 and gauge interactions ─────────────────────────
+
+const erc20Abi = [
   {
     name: "approve",
     type: "function",
@@ -119,6 +133,16 @@ const erc20ApproveAbi = [
       { name: "amount", type: "uint256" },
     ],
     outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    name: "allowance",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
   },
 ] as const;
 
@@ -201,15 +225,41 @@ router.get("/swap", async (req: Request, res: Response) => {
     };
 
     const { to, data, value } = quote.transaction;
-    const transactions: PreparedTransaction[] = [
-      {
-        step: "swap",
-        to: to as Address,
-        data,
-        value: value ? `0x${BigInt(value).toString(16)}` : "0x0",
-        chainId: CHAIN_ID,
-      },
-    ];
+    const routerAddress = to as Address;
+    const amountIn = BigInt(quote.amountIn ?? amountWei);
+    const swapTransaction: PreparedTransaction = {
+      step: "swap",
+      to: routerAddress,
+      data,
+      value: value ? `0x${BigInt(value).toString(16)}` : "0x0",
+      chainId: CHAIN_ID,
+    };
+    const transactions: PreparedTransaction[] = [];
+
+    if (!isNativeToken(tokenIn)) {
+      const allowance = await publicClient.readContract({
+        address: tokenIn,
+        abi: erc20Abi,
+        functionName: "allowance",
+        args: [recipient, routerAddress],
+      });
+
+      if (allowance < amountIn) {
+        transactions.push({
+          step: "approve-tokenIn",
+          to: tokenIn,
+          data: encodeFunctionData({
+            abi: erc20Abi,
+            functionName: "approve",
+            args: [routerAddress, amountIn],
+          }),
+          value: "0x0",
+          chainId: CHAIN_ID,
+        });
+      }
+    }
+
+    transactions.push(swapTransaction);
 
     return res.json({
       ok: true,
@@ -220,6 +270,12 @@ router.get("/swap", async (req: Request, res: Response) => {
         amountOut: quote.amountOut,
         source: quote.source,
         priceImpact: quote.priceImpact,
+      },
+      approval: {
+        required: transactions[0]?.step === "approve-tokenIn",
+        token: tokenIn,
+        spender: routerAddress,
+        amount: amountIn.toString(),
       },
       ...buildPreparePayload(transactions),
     });
@@ -399,13 +455,13 @@ router.get("/add-liquidity", async (req: Request, res: Response) => {
     );
 
     const approveToken0 = encodeFunctionData({
-      abi: erc20ApproveAbi,
+      abi: erc20Abi,
       functionName: "approve",
       args: [NFPM_ADDRESS, amount0Raw],
     });
 
     const approveToken1 = encodeFunctionData({
-      abi: erc20ApproveAbi,
+      abi: erc20Abi,
       functionName: "approve",
       args: [NFPM_ADDRESS, amount1Raw],
     });

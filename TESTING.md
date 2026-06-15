@@ -50,6 +50,13 @@ curl -s "http://localhost:3000/prepare/swap?tokenIn=0x833589fCD6eDb6E08f4c7C32D4
   | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s); const tx=j.transactions?.[0]; const call=j.sendCalls?.calls?.[0]; if(!j.ok) throw new Error(JSON.stringify(j.error)); if(j.sendCalls?.chain !== 'base') throw new Error('missing base sendCalls'); if(!tx || !call || tx.to !== call.to || tx.value !== call.value || tx.data !== call.data) throw new Error('sendCalls mismatch'); if(!/^0x[0-9a-fA-F]*$/.test(call.data) || (call.data.length - 2) % 2) throw new Error('invalid calldata'); console.log('sendCalls ok');})"
 ```
 
+ERC-20 input swaps include approval when allowance is missing:
+
+```bash
+curl -s "http://localhost:3000/prepare/swap?tokenIn=0x00000e7efa313f4e11bfff432471ed9423ac6b30&tokenOut=0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE&amount=1&decimals=18&recipient=0x0000000000000000000000000000000000000001&slippage=50" \
+  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s); const steps=j.transactions?.map(t=>t.step).join(','); if(!j.ok) throw new Error(JSON.stringify(j.error)); if(steps !== 'approve-tokenIn,swap') throw new Error('expected approve-tokenIn,swap'); if(j.sendCalls?.calls?.length !== 2) throw new Error('expected two sendCalls'); console.log('swap approval ok');})"
+```
+
 Keep this terminal open for the full testing session.
 
 ### 3 — Open the project root in Cursor
