@@ -117,7 +117,7 @@ Use `positionId` with `/prepare/remove-liquidity`.
 GET /state/trade-history?address=<walletAddress>
 ```
 
-Returns past swaps executed through Hydrex for the wallet.
+Returns past swaps executed through Hydrex for the wallet. Read the normalized top-level `trades` array; the original upstream payload remains available under `data.trades`.
 
 ---
 

@@ -59,6 +59,13 @@ curl -s "http://localhost:3000/prepare/swap?tokenIn=0x00000e7efa313f4e11bfff4324
 
 Treat every prepare response as single-use. Fetch `/prepare/swap` immediately before `send_calls`; if approval is submitted separately or a submission fails, discard the old response and fetch a fresh one before retrying.
 
+Verify trade history exposes normalized trades:
+
+```bash
+curl -s "http://localhost:3000/state/trade-history?address=<walletAddress>" \
+  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s); if(!j.ok) throw new Error(JSON.stringify(j.error)); if(!Array.isArray(j.trades)) throw new Error('missing top-level trades'); console.log('trade history ok');})"
+```
+
 Keep this terminal open for the full testing session.
 
 ### 3 — Open the project root in Cursor
