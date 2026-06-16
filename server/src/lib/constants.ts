@@ -7,6 +7,13 @@ export const CHAIN_ID = 8453; // Base mainnet
 export const ROUTER_API_BASE = "https://router.api.hydrex.fi";
 
 /**
+ * Hydrex stats API base URL.
+ * Used for read-only pool discovery before preparing liquidity actions.
+ */
+export const HYDREX_STATS_API_BASE =
+  process.env.HYDREX_STATS_API_BASE ?? "https://staging.api.hydrex.fi";
+
+/**
  * Minimal Uniswap V3-compatible pool ABI.
  * Hydrex pools implement the same interface.
  */

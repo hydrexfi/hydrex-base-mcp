@@ -66,6 +66,13 @@ curl -s "http://localhost:3000/state/trade-history?address=<walletAddress>" \
   | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s); if(!j.ok) throw new Error(JSON.stringify(j.error)); if(!Array.isArray(j.trades)) throw new Error('missing top-level trades'); console.log('trade history ok');})"
 ```
 
+Verify pool discovery returns add-liquidity inputs:
+
+```bash
+curl -s "http://localhost:3000/state/pools?tokenA=HYDX&tokenB=USDC&liquidityType=integral" \
+  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s); const p=j.pools?.[0]; if(!j.ok) throw new Error(JSON.stringify(j.error)); if(!p?.pool) throw new Error('missing pool'); if(!p.token0?.address || p.token0?.decimals === undefined) throw new Error('missing token0 metadata'); if(!p.token1?.address || p.token1?.decimals === undefined) throw new Error('missing token1 metadata'); console.log('pool discovery ok');})"
+```
+
 Keep this terminal open for the full testing session.
 
 ### 3 — Open the project root in Cursor
