@@ -159,6 +159,7 @@ Show my Hydrex trade history
 | `GET` | `/state/quote` | Best swap quote with tx payload |
 | `GET` | `/state/portfolio` | Token balances for a wallet |
 | `GET` | `/state/positions` | Open LP positions (on-chain, from NFPM) |
+| `GET` | `/state/pools` | Discover Hydrex pools by token pair and liquidity type |
 | `GET` | `/state/trade-history` | Swap history for a wallet (`trades`, with upstream payload under `data`) |
 
 ### Prepare
