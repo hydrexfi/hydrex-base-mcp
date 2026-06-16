@@ -36,18 +36,94 @@ import {
   nearestUsableTick,
 } from "@hydrexfi/hydrex-sdk";
 import { CHAIN_ID, ROUTER_API_BASE } from "../lib/constants";
-import { fetchPool, fetchPosition, priceToTick, NFPM_ADDRESS } from "../lib/pool";
+import {
+  fetchPool,
+  fetchPosition,
+  priceToTick,
+  NFPM_ADDRESS,
+  publicClient,
+} from "../lib/pool";
 
 const router = Router();
 
+const addressPattern = /^0x[0-9a-fA-F]{40}$/;
+
 const addressSchema = z
   .string()
-  .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address")
+  .regex(addressPattern, "Invalid EVM address")
   .transform((v) => v as Address);
 
-// ─── ABI fragments for gauge interactions ────────────────────────────────────
+type PreparedTransaction = {
+  step: string;
+  to: Address;
+  data: string;
+  value: string;
+  chainId: typeof CHAIN_ID;
+};
 
-const erc20ApproveAbi = [
+type SendCallsPayload = {
+  chain: "base";
+  calls: Array<{
+    to: Address;
+    value: string;
+    data: string;
+  }>;
+};
+
+const hexSchema = /^0x[0-9a-fA-F]*$/;
+const hexValueSchema = /^0x[0-9a-fA-F]+$/;
+const nativeTokenAddresses = new Set([
+  "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "0x0000000000000000000000000000000000000000",
+]);
+
+function assertHexData(data: string, step: string): void {
+  if (!hexSchema.test(data)) {
+    throw new Error(`${step} calldata must be a 0x-prefixed hex string`);
+  }
+  if ((data.length - 2) % 2 !== 0) {
+    throw new Error(`${step} calldata must have an even hex length`);
+  }
+}
+
+function assertHexValue(value: string, step: string): void {
+  if (!hexValueSchema.test(value)) {
+    throw new Error(`${step} value must be a 0x-prefixed hex string`);
+  }
+}
+
+function assertAddress(value: string, step: string): void {
+  if (!addressPattern.test(value)) {
+    throw new Error(`${step} target must be an EVM address`);
+  }
+}
+
+function buildPreparePayload(transactions: PreparedTransaction[]): {
+  transactions: PreparedTransaction[];
+  sendCalls: SendCallsPayload;
+} {
+  for (const tx of transactions) {
+    assertAddress(tx.to, tx.step);
+    assertHexData(tx.data, tx.step);
+    assertHexValue(tx.value, tx.step);
+  }
+
+  return {
+    transactions,
+    sendCalls: {
+      chain: "base",
+      calls: transactions.map(({ to, value, data }) => ({ to, value, data })),
+    },
+  };
+}
+
+function isNativeToken(address: Address): boolean {
+  return nativeTokenAddresses.has(address.toLowerCase());
+}
+
+// ─── ABI fragments for ERC-20 and gauge interactions ─────────────────────────
+
+const erc20Abi = [
   {
     name: "approve",
     type: "function",
@@ -57,6 +133,16 @@ const erc20ApproveAbi = [
       { name: "amount", type: "uint256" },
     ],
     outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    name: "allowance",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
   },
 ] as const;
 
@@ -108,10 +194,10 @@ router.get("/swap", async (req: Request, res: Response) => {
 
   const amountWei = parseUnits(amount, decimals).toString();
   const params = new URLSearchParams({
-    tokenIn,
-    tokenOut,
+    fromTokenAddress: tokenIn,
+    toTokenAddress: tokenOut,
     amount: amountWei,
-    recipient,
+    taker: recipient,
     chainId: String(CHAIN_ID),
     slippage: String(slippage),
   });
@@ -127,36 +213,71 @@ router.get("/swap", async (req: Request, res: Response) => {
     }
 
     const quote = (await upstream.json()) as {
-      tokenIn?: string;
-      tokenOut?: string;
       amountIn?: string;
       amountOut: string;
       source?: string;
       priceImpact?: number;
-      to: string;
-      data: string;
-      value?: string;
+      transaction: {
+        to: string;
+        data: string;
+        value?: string;
+      };
     };
+
+    const { to, data, value } = quote.transaction;
+    const routerAddress = to as Address;
+    const amountIn = BigInt(quote.amountIn ?? amountWei);
+    const swapTransaction: PreparedTransaction = {
+      step: "swap",
+      to: routerAddress,
+      data,
+      value: value ? `0x${BigInt(value).toString(16)}` : "0x0",
+      chainId: CHAIN_ID,
+    };
+    const transactions: PreparedTransaction[] = [];
+
+    if (!isNativeToken(tokenIn)) {
+      const allowance = await publicClient.readContract({
+        address: tokenIn,
+        abi: erc20Abi,
+        functionName: "allowance",
+        args: [recipient, routerAddress],
+      });
+
+      if (allowance < amountIn) {
+        transactions.push({
+          step: "approve-tokenIn",
+          to: tokenIn,
+          data: encodeFunctionData({
+            abi: erc20Abi,
+            functionName: "approve",
+            args: [routerAddress, amountIn],
+          }),
+          value: "0x0",
+          chainId: CHAIN_ID,
+        });
+      }
+    }
+
+    transactions.push(swapTransaction);
 
     return res.json({
       ok: true,
       quote: {
-        tokenIn: quote.tokenIn ?? tokenIn,
-        tokenOut: quote.tokenOut ?? tokenOut,
+        tokenIn,
+        tokenOut,
         amountIn: quote.amountIn ?? amountWei,
         amountOut: quote.amountOut,
         source: quote.source,
         priceImpact: quote.priceImpact,
       },
-      transactions: [
-        {
-          step: "swap",
-          to: quote.to,
-          data: quote.data,
-          value: quote.value ?? "0x0",
-          chainId: CHAIN_ID,
-        },
-      ],
+      approval: {
+        required: transactions[0]?.step === "approve-tokenIn",
+        token: tokenIn,
+        spender: routerAddress,
+        amount: amountIn.toString(),
+      },
+      ...buildPreparePayload(transactions),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -187,22 +308,23 @@ router.get("/claim", async (req: Request, res: Response) => {
   }
 
   const { from, gauge } = parsed.data;
+  const transactions: PreparedTransaction[] = [
+    {
+      step: "claim",
+      to: gauge,
+      data: encodeFunctionData({
+        abi: gaugeGetRewardAbi,
+        functionName: "getReward",
+        args: [from],
+      }),
+      value: "0x0",
+      chainId: CHAIN_ID,
+    },
+  ];
 
   return res.json({
     ok: true,
-    transactions: [
-      {
-        step: "claim",
-        to: gauge,
-        data: encodeFunctionData({
-          abi: gaugeGetRewardAbi,
-          functionName: "getReward",
-          args: [from],
-        }),
-        value: "0x0",
-        chainId: CHAIN_ID,
-      },
-    ],
+    ...buildPreparePayload(transactions),
   });
 });
 
@@ -333,16 +455,39 @@ router.get("/add-liquidity", async (req: Request, res: Response) => {
     );
 
     const approveToken0 = encodeFunctionData({
-      abi: erc20ApproveAbi,
+      abi: erc20Abi,
       functionName: "approve",
       args: [NFPM_ADDRESS, amount0Raw],
     });
 
     const approveToken1 = encodeFunctionData({
-      abi: erc20ApproveAbi,
+      abi: erc20Abi,
       functionName: "approve",
       args: [NFPM_ADDRESS, amount1Raw],
     });
+    const transactions: PreparedTransaction[] = [
+      {
+        step: "approve-token0",
+        to: token0Address,
+        data: approveToken0,
+        value: "0x0",
+        chainId: CHAIN_ID,
+      },
+      {
+        step: "approve-token1",
+        to: token1Address,
+        data: approveToken1,
+        value: "0x0",
+        chainId: CHAIN_ID,
+      },
+      {
+        step: "mint",
+        to: NFPM_ADDRESS,
+        data: encodeNfpmCalldata(calldata),
+        value: `0x${BigInt(value).toString(16)}`,
+        chainId: CHAIN_ID,
+      },
+    ];
 
     return res.json({
       ok: true,
@@ -352,29 +497,7 @@ router.get("/add-liquidity", async (req: Request, res: Response) => {
         amount0: position.amount0.toSignificant(6),
         amount1: position.amount1.toSignificant(6),
       },
-      transactions: [
-        {
-          step: "approve-token0",
-          to: token0Address,
-          data: approveToken0,
-          value: "0x0",
-          chainId: CHAIN_ID,
-        },
-        {
-          step: "approve-token1",
-          to: token1Address,
-          data: approveToken1,
-          value: "0x0",
-          chainId: CHAIN_ID,
-        },
-        {
-          step: "mint",
-          to: NFPM_ADDRESS,
-          data: encodeNfpmCalldata(calldata),
-          value: `0x${BigInt(value).toString(16)}`,
-          chainId: CHAIN_ID,
-        },
-      ],
+      ...buildPreparePayload(transactions),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -473,18 +596,19 @@ router.get("/remove-liquidity", async (req: Request, res: Response) => {
           recipient: from,
         },
       });
+    const transactions: PreparedTransaction[] = [
+      {
+        step: "remove-liquidity",
+        to: NFPM_ADDRESS,
+        data: encodeNfpmCalldata(calldata),
+        value: `0x${BigInt(value).toString(16)}`,
+        chainId: CHAIN_ID,
+      },
+    ];
 
     return res.json({
       ok: true,
-      transactions: [
-        {
-          step: "remove-liquidity",
-          to: NFPM_ADDRESS,
-          data: encodeNfpmCalldata(calldata),
-          value: `0x${BigInt(value).toString(16)}`,
-          chainId: CHAIN_ID,
-        },
-      ],
+      ...buildPreparePayload(transactions),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

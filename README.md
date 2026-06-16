@@ -159,7 +159,7 @@ Show my Hydrex trade history
 | `GET` | `/state/quote` | Best swap quote with tx payload |
 | `GET` | `/state/portfolio` | Token balances for a wallet |
 | `GET` | `/state/positions` | Open LP positions (on-chain, from NFPM) |
-| `GET` | `/state/trade-history` | Swap history for a wallet |
+| `GET` | `/state/trade-history` | Swap history for a wallet (`trades`, with upstream payload under `data`) |
 
 ### Prepare
 
@@ -170,9 +170,19 @@ All prepare endpoints return ordered-batch transactions:
   "ok": true,
   "transactions": [
     { "step": "<label>", "to": "0x...", "data": "0x...", "value": "0x0", "chainId": 8453 }
-  ]
+  ],
+  "sendCalls": {
+    "chain": "base",
+    "calls": [
+      { "to": "0x...", "value": "0x0", "data": "0x..." }
+    ]
+  }
 }
 ```
+
+Use `sendCalls` directly with Base MCP `send_calls`. It is the same calldata from `transactions[]`, pre-shaped to avoid manually copying long hex strings.
+
+For swaps, ERC-20 input tokens may include an `approve-tokenIn` transaction before the `swap` transaction when wallet allowance is too low. Native ETH swaps return the swap transaction only.
 
 | Method | Path | Key params |
 |---|---|---|

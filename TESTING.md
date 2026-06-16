@@ -43,6 +43,29 @@ curl http://localhost:3000/health
 # {"ok":true,"service":"hydrex-base-skill-server","chainId":8453}
 ```
 
+Verify prepare responses include a Base MCP-ready handoff payload:
+
+```bash
+curl -s "http://localhost:3000/prepare/swap?tokenIn=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913&tokenOut=0x4200000000000000000000000000000000000006&amount=1&decimals=6&recipient=0x0000000000000000000000000000000000000001&slippage=50" \
+  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s); const tx=j.transactions?.[0]; const call=j.sendCalls?.calls?.[0]; if(!j.ok) throw new Error(JSON.stringify(j.error)); if(j.sendCalls?.chain !== 'base') throw new Error('missing base sendCalls'); if(!tx || !call || tx.to !== call.to || tx.value !== call.value || tx.data !== call.data) throw new Error('sendCalls mismatch'); if(!/^0x[0-9a-fA-F]*$/.test(call.data) || (call.data.length - 2) % 2) throw new Error('invalid calldata'); console.log('sendCalls ok');})"
+```
+
+ERC-20 input swaps include approval when allowance is missing:
+
+```bash
+curl -s "http://localhost:3000/prepare/swap?tokenIn=0x00000e7efa313f4e11bfff432471ed9423ac6b30&tokenOut=0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE&amount=1&decimals=18&recipient=0x0000000000000000000000000000000000000001&slippage=50" \
+  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s); const steps=j.transactions?.map(t=>t.step).join(','); if(!j.ok) throw new Error(JSON.stringify(j.error)); if(steps !== 'approve-tokenIn,swap') throw new Error('expected approve-tokenIn,swap'); if(j.sendCalls?.calls?.length !== 2) throw new Error('expected two sendCalls'); console.log('swap approval ok');})"
+```
+
+Treat every prepare response as single-use. Fetch `/prepare/swap` immediately before `send_calls`; if approval is submitted separately or a submission fails, discard the old response and fetch a fresh one before retrying.
+
+Verify trade history exposes normalized trades:
+
+```bash
+curl -s "http://localhost:3000/state/trade-history?address=<walletAddress>" \
+  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s); if(!j.ok) throw new Error(JSON.stringify(j.error)); if(!Array.isArray(j.trades)) throw new Error('missing top-level trades'); console.log('trade history ok');})"
+```
+
 Keep this terminal open for the full testing session.
 
 ### 3 — Open the project root in Cursor
@@ -124,6 +147,8 @@ Always run the positions query first to get your `positionId` values. You can re
 | `base-mcp` shows disconnected | Restart Cursor; confirm you opened the repo root, not a subfolder |
 | Agent doesn't know Hydrex actions | Check that `.cursor/rules/hydrex.mdc` exists; start a fresh chat |
 | Prepare endpoint 500 errors | Check the `server/` terminal output; most common cause is a bad `BASE_RPC_URL` |
+| `send_calls` rejects odd-length hex | Re-fetch `/prepare/*` and submit `response.sendCalls` directly; do not copy or edit `calls[].data` |
+| `send_calls` gas estimation reverts | Discard the prepare response, fetch fresh `/prepare/swap` calldata, and retry only after confirming with the user |
 | Wallet popup never appears | Ensure a Coinbase Smart Wallet is set up; the popup appears on the first `send_calls` |
 | Port 3000 already in use | Set `PORT=3001` in `server/.env` and restart the server |
 

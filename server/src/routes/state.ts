@@ -112,8 +112,9 @@ router.get("/trade-history", async (req: Request, res: Response) => {
     const upstream = await fetch(
       `${ROUTER_API_BASE}/transactions/trade-history?address=${address}&chainId=${CHAIN_ID}`
     );
-    const data = await upstream.json();
-    return res.json({ ok: true, data });
+    const data = (await upstream.json()) as { trades?: unknown[] };
+    const trades = Array.isArray(data?.trades) ? data.trades : [];
+    return res.json({ ok: true, data, trades });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Upstream error";
     return res.status(502).json({ ok: false, error: message });
