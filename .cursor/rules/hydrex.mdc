@@ -222,9 +222,13 @@ Response:
 | `decimals1` | number | — | token1 decimals (default: 18) |
 | `amount0` | string | ✓ | Desired token0 amount, human-readable |
 | `amount1` | string | ✓ | Desired token1 amount, human-readable |
-| `priceLower` | number | — | Lower price bound (token1/token0). Defaults to −20% of current price |
-| `priceUpper` | number | — | Upper price bound (token1/token0). Defaults to +20% of current price |
+| `priceLower` | number | — | Custom lower price bound (token1/token0). Required together with `priceUpper` |
+| `priceUpper` | number | — | Custom upper price bound (token1/token0). Required together with `priceLower` |
+| `rangePreset` | string | — | `tight` (±1%), `narrow` (±5%), `common` (±12.5%), `wide` (±20%) |
+| `fullRange` | boolean | — | `true` to use the full tick range (default: `false`) |
 | `slippage` | number | — | Slippage in bps (default: 50) |
+
+**The range is specified in exactly one of three mutually exclusive ways:** `fullRange`, a `rangePreset`, or a custom `priceLower`+`priceUpper`. Sending more than one returns a `400`. If none is provided, the server defaults to the `common` preset (±12.5%). A custom range requires **both** `priceLower` and `priceUpper`.
 
 Response — three transactions, always in this order:
 ```json
@@ -239,7 +243,15 @@ Response — three transactions, always in this order:
 }
 ```
 
-If the user does not specify a price range, default to ±20% of the current pool price and tell them: "I'm using a ±20% price range around the current price. You can specify a tighter or wider range if you prefer."
+If the user does not specify a price range, default to the `common` preset (±12.5% of the current pool price) and tell them: "I'm using a ±12.5% (Common) price range around the current price. You can choose Tight (±1%), Narrow (±5%), Wide (±20%), a custom range, or full range if you prefer."
+
+Range options are **mutually exclusive** — pick exactly one (sending more than one returns a `400`):
+- **Tight** — `rangePreset=tight` (±1%)
+- **Narrow** — `rangePreset=narrow` (±5%)
+- **Common** — `rangePreset=common` (±12.5%, also the default when nothing is specified)
+- **Wide** — `rangePreset=wide` (±20%)
+- **Custom** — explicit `priceLower` **and** `priceUpper` (both required)
+- **Full range** — `fullRange=true`
 
 ---
 
@@ -354,10 +366,10 @@ All prepare endpoints return `{ "ok": false, "error": "..." }` on failure — su
 3. If the user gave a token pair/strategy/yield question instead of a pool address:
      GET /state/pools?tokenA=<symbol>&tokenB=<symbol>[&liquidityType=<type>][&days=30]
      → choose the matching pool, or ask the user if multiple pools remain
-4. Confirm: selected pool, token pair, amounts, price range (or default ±20%)
+4. Confirm: selected pool, token pair, amounts, price range (or default Common ±12.5%)
 5. GET /prepare/add-liquidity?from=<address>&pool=<pool>&token0=<t0>&token1=<t1>
        &decimals0=<d0>&decimals1=<d1>&amount0=<a0>&amount1=<a1>
-       [&priceLower=<p>&priceUpper=<p>]
+       (choose at most one: &rangePreset=tight|narrow|common|wide  OR  &priceLower=<p>&priceUpper=<p>  OR  &fullRange=true)
      → show position.tickLower, tickUpper, amount0, amount1 to user before proceeding
 6. send_calls(chain="base", calls from transactions[])
 7. get_request_status(requestId) — poll automatically until success or failed
@@ -420,7 +432,7 @@ Pass all transactions in a single `calls` array — Base MCP executes them atomi
 2. `GET /state/positions?address=<address>` → existing position context
 3. `GET /state/pools?tokenA=USDC&tokenB=WETH`
 4. If one pool clearly matches, use it; otherwise show matching pools by liquidityType, fee, TVL, and pool address
-5. Confirm selected pool; default price range to ±20% of current price and inform user of the range used
+5. Confirm selected pool; default price range to Common (±12.5%) of current price and inform user of the range used
 6. `GET /prepare/add-liquidity?from=<address>&pool=<pool>&token0=<USDC>&token1=<WETH>&decimals0=6&decimals1=18&amount0=100&amount1=0.04`
 7. Show returned `position` (tickLower, tickUpper, amounts) to user
 8. `send_calls(chain="base", calls=[approve-token0, approve-token1, mint])`

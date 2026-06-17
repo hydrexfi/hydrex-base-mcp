@@ -46,6 +46,16 @@ import {
 
 const router = Router();
 
+// Fractional half-widths for add-liquidity range presets. Each value is the
+// fraction above/below the current price used to derive the bounds, e.g.
+// "common" → ±12.5% of the current price.
+const RANGE_PRESETS = {
+  tight: 0.01,
+  narrow: 0.05,
+  common: 0.125,
+  wide: 0.2,
+} as const;
+
 const addressPattern = /^0x[0-9a-fA-F]{40}$/;
 
 const addressSchema = z
@@ -338,8 +348,9 @@ router.get("/claim", async (req: Request, res: Response) => {
  * + mint batch (three transactions).
  *
  * Reads current pool state on-chain to resolve tick spacing and
- * current price. If priceLower/priceUpper are omitted, defaults to
- * ±20% of the current pool price.
+ * current price. The range is specified in exactly one of three mutually
+ * exclusive ways; when none is given it defaults to the "common" preset
+ * (±12.5% of current price).
  *
  * Query params:
  *   from        - wallet address providing liquidity
@@ -350,8 +361,13 @@ router.get("/claim", async (req: Request, res: Response) => {
  *   decimals1   - token1 decimals (default: 18)
  *   amount0     - desired token0 amount, human-readable (e.g. "0.05")
  *   amount1     - desired token1 amount, human-readable (e.g. "100")
- *   priceLower  - lower bound price (token1 per token0), optional
- *   priceUpper  - upper bound price (token1 per token0), optional
+ *
+ * Range options (choose at most one):
+ *   fullRange   - "true"/"1" to use the full tick range
+ *   rangePreset - tight (±1%), narrow (±5%), common (±12.5%), wide (±20%)
+ *   priceLower + priceUpper - explicit custom bounds (token1 per token0);
+ *                 both are required together
+ *
  *   slippage    - slippage in bps (default: 50)
  */
 router.get("/add-liquidity", async (req: Request, res: Response) => {
@@ -366,6 +382,7 @@ router.get("/add-liquidity", async (req: Request, res: Response) => {
     amount1: z.string().min(1),
     priceLower: z.coerce.number().positive().optional(),
     priceUpper: z.coerce.number().positive().optional(),
+    rangePreset: z.enum(["tight", "narrow", "common", "wide"]).optional(),
     fullRange: z
       .enum(["true", "false", "1", "0"])
       .transform((v) => v === "true" || v === "1")
@@ -389,9 +406,36 @@ router.get("/add-liquidity", async (req: Request, res: Response) => {
     amount1,
     priceLower,
     priceUpper,
+    rangePreset,
     fullRange,
     slippage,
   } = parsed.data;
+
+  // The range can be specified in exactly one way: full range, a named preset,
+  // or an explicit custom range. These are mutually exclusive so callers aren't
+  // confused about which inputs are required. When none are given we fall back
+  // to the "common" preset.
+  const hasCustom = priceLower !== undefined || priceUpper !== undefined;
+  const hasPreset = rangePreset !== undefined;
+  const modesSelected = [fullRange, hasPreset, hasCustom].filter(
+    Boolean
+  ).length;
+
+  if (modesSelected > 1) {
+    return res.status(400).json({
+      ok: false,
+      error:
+        "Choose only one range option: fullRange, rangePreset, or a custom priceLower/priceUpper range.",
+    });
+  }
+
+  if (hasCustom && (priceLower === undefined || priceUpper === undefined)) {
+    return res.status(400).json({
+      ok: false,
+      error:
+        "A custom range requires both priceLower and priceUpper. Omit both to use a rangePreset.",
+    });
+  }
 
   try {
     const pool = await fetchPool(
@@ -411,12 +455,17 @@ router.get("/add-liquidity", async (req: Request, res: Response) => {
     if (fullRange) {
       tickLower = nearestUsableTick(TickMath.MIN_TICK, pool.tickSpacing);
       tickUpper = nearestUsableTick(TickMath.MAX_TICK, pool.tickSpacing);
+    } else if (hasCustom) {
+      // Explicit custom range; both bounds are guaranteed present here.
+      tickLower = priceToTick(priceLower!, token0, token1, pool.tickSpacing);
+      tickUpper = priceToTick(priceUpper!, token0, token1, pool.tickSpacing);
     } else {
-      // Default price range to ±20% of current price if not specified.
+      // Named preset, defaulting to "common" when none was provided.
       // currentPrice is expressed as token1 per token0.
       const currentPrice = parseFloat(pool.token0Price.toSignificant(18));
-      const lower = priceLower ?? currentPrice * 0.8;
-      const upper = priceUpper ?? currentPrice * 1.2;
+      const pct = RANGE_PRESETS[rangePreset ?? "common"];
+      const lower = currentPrice * (1 - pct);
+      const upper = currentPrice * (1 + pct);
 
       tickLower = priceToTick(lower, token0, token1, pool.tickSpacing);
       tickUpper = priceToTick(upper, token0, token1, pool.tickSpacing);

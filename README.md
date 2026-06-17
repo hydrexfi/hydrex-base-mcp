@@ -111,7 +111,7 @@ Add liquidity to the USDC/ETH pool on Hydrex
   price range: 1800 to 2200
 ```
 
-**Price range** — if omitted, the agent defaults to **±20% of the current pool price** and tells you what range was used. You can request a tighter range for higher fee capture (and higher impermanent loss risk) or a wider range for lower maintenance.
+**Price range** — if omitted, the agent defaults to the **Common (±12.5%)** preset around the current pool price and tells you what range was used. You can choose **Tight (±1%)**, **Narrow (±5%)**, **Common (±12.5%)**, **Wide (±20%)**, a **custom** range (explicit lower/upper prices), or **full range**. Tighter ranges capture more fees (with higher impermanent loss risk); wider ranges need less maintenance.
 
 The wallet approval batches three calls atomically: approve token0 → approve token1 → mint position.
 
@@ -188,7 +188,7 @@ For swaps, ERC-20 input tokens may include an `approve-tokenIn` transaction befo
 | Method | Path | Key params |
 |---|---|---|
 | `GET` | `/prepare/swap` | `tokenIn`, `tokenOut`, `amount`, `decimals`, `recipient`, `slippage` |
-| `GET` | `/prepare/add-liquidity` | `from`, `pool`, `token0`, `token1`, `amount0`, `amount1`, `priceLower`?, `priceUpper`? |
+| `GET` | `/prepare/add-liquidity` | `from`, `pool`, `token0`, `token1`, `amount0`, `amount1`, `rangePreset`?, `priceLower`?, `priceUpper`?, `fullRange`? |
 | `GET` | `/prepare/remove-liquidity` | `from`, `positionId`, `pool`, `liquidityPercent`?, `slippage` |
 
 ---

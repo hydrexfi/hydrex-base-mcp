@@ -131,7 +131,7 @@ Add liquidity to the USDC/ETH pool on Hydrex
   amounts: 100 USDC and 0.04 ETH
 ```
 
-If you omit a price range, the agent defaults to ±20% of the current pool price and tells you what it used. The wallet approval batches three calls atomically: approve token0 → approve token1 → mint position.
+If you omit a price range, the agent defaults to the Common preset (±12.5% of the current pool price) and tells you what it used. Other presets: Tight (±1%), Narrow (±5%), Wide (±20%), plus custom range and full range. The wallet approval batches three calls atomically: approve token0 → approve token1 → mint position.
 
 Pool addresses are available at [hydrex.fi](https://hydrex.fi).
 
