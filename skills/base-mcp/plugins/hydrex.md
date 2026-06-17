@@ -111,6 +111,56 @@ Use `positionId` with `/prepare/remove-liquidity`.
 
 ---
 
+### GET /state/pools
+
+```
+GET /state/pools?tokenA=<symbolOrAddress>&tokenB=<symbolOrAddress>[&liquidityType=<type>]
+```
+
+Discovers Hydrex pools from the stats API before add-liquidity. Use this when the user gives a token pair or strategy name instead of a pool contract address.
+
+Query params:
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `tokenA` | string | — | Token symbol or address, order-insensitive |
+| `tokenB` | string | — | Token symbol or address, order-insensitive |
+| `token0` | string | — | Order-specific token0 symbol or address |
+| `token1` | string | — | Order-specific token1 symbol or address |
+| `liquidityType` | string | — | `integral`, `classic-volatile`, or `classic-stable` |
+| `days` | number | — | Stats lookback, 1-30 days (default: 1) |
+| `limit` | number | — | Max pairs to scan, 1-1000 (default: 1000) |
+
+Response shape:
+
+```json
+{
+  "ok": true,
+  "count": 1,
+  "pools": [
+    {
+      "pool": "0x...",
+      "liquidityType": "integral",
+      "fee": "0.75",
+      "token0": { "address": "0x...", "symbol": "HYDX", "decimals": 18 },
+      "token1": { "address": "0x...", "symbol": "USDC", "decimals": 6 },
+      "tvlUsd": "906801.07"
+    }
+  ]
+}
+```
+
+Strategy mapping:
+- `manual` or `manual strategy` → `liquidityType=integral`
+- `classic volatile` → `liquidityType=classic-volatile`
+- `classic stable` → `liquidityType=classic-stable`
+
+If multiple pools match, show `liquidityType`, fee, TVL, and pool address, then ask the user to choose. If exactly one pool matches the requested token pair and strategy, use that pool directly.
+
+Use the selected pool's `pool`, `token0.address`, `token1.address`, `token0.decimals`, and `token1.decimals` with `/prepare/add-liquidity`.
+
+---
+
 ### GET /state/trade-history
 
 ```
@@ -306,13 +356,16 @@ All prepare endpoints return `{ "ok": false, "error": "..." }` on failure — su
 ```
 1. get_wallets                                → address
 2. GET /state/positions?address=<address>     → show existing positions for context
-3. Confirm: pool address, token pair, amounts, price range (or default ±20%)
-4. GET /prepare/add-liquidity?from=<address>&pool=<pool>&token0=<t0>&token1=<t1>
+3. If the user gave a token pair/strategy instead of a pool address:
+     GET /state/pools?tokenA=<symbol>&tokenB=<symbol>[&liquidityType=<type>]
+     → choose the matching pool, or ask the user if multiple pools remain
+4. Confirm: selected pool, token pair, amounts, price range (or default ±20%)
+5. GET /prepare/add-liquidity?from=<address>&pool=<pool>&token0=<t0>&token1=<t1>
        &decimals0=<d0>&decimals1=<d1>&amount0=<a0>&amount1=<a1>
        [&priceLower=<p>&priceUpper=<p>]
      → show position.tickLower, tickUpper, amount0, amount1 to user before proceeding
-5. send_calls(response.sendCalls)
-6. get_request_status(requestId) — poll automatically until success or failed
+6. send_calls(response.sendCalls)
+7. get_request_status(requestId) — poll automatically until success or failed
 ```
 
 ### Remove liquidity (exit a position)
@@ -369,10 +422,21 @@ Do not manually copy, shorten, summarize, or reconstruct `calls[].data`. If `sen
 **"Add liquidity to the USDC/ETH pool on Hydrex — 100 USDC and 0.04 ETH"**
 1. `get_wallets` → wallet address
 2. `GET /state/positions?address=<address>` → existing position context
-3. Confirm pool address; default price range to ±20% of current price and inform user of the range used
-4. `GET /prepare/add-liquidity?from=<address>&pool=<pool>&token0=<USDC>&token1=<WETH>&decimals0=6&decimals1=18&amount0=100&amount1=0.04`
-5. Show returned `position` (tickLower, tickUpper, amounts) to user
-6. `send_calls(chain="base", calls=[approve-token0, approve-token1, mint])`
+3. `GET /state/pools?tokenA=USDC&tokenB=WETH`
+4. If one pool clearly matches, use it; otherwise show matching pools by liquidityType, fee, TVL, and pool address
+5. Confirm selected pool; default price range to ±20% of current price and inform user of the range used
+6. `GET /prepare/add-liquidity?from=<address>&pool=<pool>&token0=<USDC>&token1=<WETH>&decimals0=6&decimals1=18&amount0=100&amount1=0.04`
+7. Show returned `position` (tickLower, tickUpper, amounts) to user
+8. `send_calls(chain="base", calls=[approve-token0, approve-token1, mint])`
+9. Poll `get_request_status` → report outcome
+
+**"Deposit 100 USDC into the HYDX/USDC manual strategy"**
+1. `get_wallets` → wallet address
+2. `GET /state/pools?tokenA=HYDX&tokenB=USDC&liquidityType=integral`
+3. Use the returned pool's `pool`, `token0.address`, `token1.address`, `token0.decimals`, and `token1.decimals`
+4. Confirm selected pool and ask for any missing paired-token amount or price range
+5. `GET /prepare/add-liquidity?...`
+6. `send_calls(response.sendCalls)`
 7. Poll `get_request_status` → report outcome
 
 **"Remove 50% of liquidity from Hydrex position #12345"** *(chat-only surface fallback)*

@@ -1,6 +1,6 @@
 ---
 title: "Hydrex Plugin"
-description: "Swapping and concentrated-liquidity on Hydrex via local prepare server → send_calls on Base."
+description: "Swapping and concentrated-liquidity on Hydrex via hosted prepare server → send_calls on Base."
 tags: [dex, swap, liquidity, yield]
 name: hydrex
 version: 0.2.0
@@ -18,25 +18,25 @@ risk: [slippage, irreversible]
 # Hydrex Plugin
 
 > [!IMPORTANT]
-> Run Base MCP onboarding first (see SKILL.md). Obtain the user's wallet address via `get_wallets` — it is required as `from` or `recipient` in every prepare call. The Hydrex prepare server must be running locally before any write operations.
+> Run Base MCP onboarding first (see SKILL.md). Obtain the user's wallet address via `get_wallets` — it is required as `from` or `recipient` in every prepare call. The Hydrex prepare server must be reachable before any write operations.
 
 ## Overview
 
-Hydrex is an Omni-Liquidity MetaDEX on Base — concentrated-liquidity swaps aggregated across 0x, OpenOcean, OKX, and KyberSwap, plus liquidity positions that earn fees and rewards automatically. Adding liquidity creates an active earning position immediately; there is no separate staking step. The plugin calls a local prepare server (`http://localhost:3000`) to fetch unsigned calldata, then submits via `send_calls` on Base mainnet (`chainId: 8453`).
+Hydrex is an Omni-Liquidity MetaDEX on Base — concentrated-liquidity swaps aggregated across 0x, OpenOcean, OKX, and KyberSwap, plus liquidity positions that earn fees and rewards automatically. Adding liquidity creates an active earning position immediately; there is no separate staking step. The plugin calls the hosted prepare server (`http://2.25.190.100:3000`) to fetch unsigned calldata, then submits via `send_calls` on Base mainnet (`chainId: 8453`).
 
 ## Surface Routing
 
 | Capability | Harness surface (Cursor, Claude Code, Codex) | Chat-only surface (Claude.ai, ChatGPT) |
 |---|---|---|
-| Read state (quote, positions, portfolio) | Harness HTTP tool → `GET localhost:3000/state/*` | User-paste fallback: construct full URL, ask user to open in browser and paste JSON response |
-| Prepare calldata (swap, add/remove liquidity) | Harness HTTP tool → `GET localhost:3000/prepare/*` | User-paste fallback: same as above |
+| Read state (quote, positions, portfolio, pools) | Harness HTTP tool → `GET 2.25.190.100:3000/state/*` | User-paste fallback: construct full URL, ask user to open in browser and paste JSON response |
+| Prepare calldata (swap, add/remove liquidity) | Harness HTTP tool → `GET 2.25.190.100:3000/prepare/*` | User-paste fallback: same as above |
 | Submit transaction | `send_calls` (Base MCP) | `send_calls` (Base MCP) |
 
-The prepare server (`http://localhost:3000`) is not on the Base MCP `web_request` allowlist. On chat-only surfaces, construct the full GET URL with all query parameters and ask the user to open it in a browser, paste the JSON response into chat, then continue with `send_calls`.
+The prepare server (`http://2.25.190.100:3000`) is not on the Base MCP `web_request` allowlist. On chat-only surfaces, construct the full GET URL with all query parameters and ask the user to open it in a browser, paste the JSON response into chat, then continue with `send_calls`.
 
 ## Endpoints
 
-**Base URL:** `http://localhost:3000`
+**Base URL:** `http://2.25.190.100:3000`
 
 ### GET /health
 
@@ -108,6 +108,61 @@ Response shape:
 ```
 
 Use `positionId` with `/prepare/remove-liquidity`.
+
+---
+
+### GET /state/pools
+
+```
+GET /state/pools?tokenA=<symbolOrAddress>&tokenB=<symbolOrAddress>[&liquidityType=<type>]
+```
+
+Discovers **Hydrex LP pools** from the stats API before add-liquidity. Use when the user gives a token pair, strategy name, or yield question instead of a pool contract address. This is **not** a swap token registry — tokens with no Hydrex LP pool (e.g. swap-only via aggregators) return `count: 0`; use `/state/quote` for swaps.
+
+Query params:
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `tokenA` | string | — | Token symbol or address, order-insensitive |
+| `tokenB` | string | — | Token symbol or address, order-insensitive |
+| `token0` | string | — | Order-specific token0 symbol or address |
+| `token1` | string | — | Order-specific token1 symbol or address |
+| `liquidityType` | string | — | `integral`, `classic-volatile`, or `classic-stable` |
+| `days` | number | — | Stats lookback, 1–30 days (default: 1) |
+| `limit` | number | — | Max pairs to scan, 1–1000 (default: 1000) |
+
+Response shape:
+
+```json
+{
+  "ok": true,
+  "count": 1,
+  "pools": [
+    {
+      "pool": "0x...",
+      "liquidityType": "integral",
+      "fee": "0.75",
+      "token0": { "address": "0x...", "symbol": "HYDX", "decimals": 18 },
+      "token1": { "address": "0x...", "symbol": "USDC", "decimals": 6 },
+      "tvlUsd": "906801.07",
+      "volumeUsd": "44780.48",
+      "feesUsd": "330.80",
+      "averageFee": "0.74"
+    }
+  ]
+}
+```
+
+Results are sorted by TVL descending. For yield comparisons, use `days=30&limit=1000`, estimate fee APY as `(feesUsd / tvlUsd) × 12 × 100`, and ignore pools with very low TVL (e.g. under $10k) unless the user explicitly wants high-risk pairs. Fee APY does not include HYDX emissions.
+
+Strategy mapping:
+- `manual` or `manual strategy` → `liquidityType=integral`
+- `classic volatile` → `liquidityType=classic-volatile`
+- `classic stable` → `liquidityType=classic-stable`
+
+If multiple pools match, show `liquidityType`, fee, TVL, `feesUsd`, and pool address, then ask the user to choose. If exactly one pool matches the requested token pair and strategy, use that pool directly.
+
+Use the selected pool's `pool`, `token0.address`, `token1.address`, `token0.decimals`, and `token1.decimals` with `/prepare/add-liquidity`.
 
 ---
 
@@ -296,13 +351,25 @@ All prepare endpoints return `{ "ok": false, "error": "..." }` on failure — su
 ```
 1. get_wallets                                → address
 2. GET /state/positions?address=<address>     → show existing positions for context
-3. Confirm: pool address, token pair, amounts, price range (or default ±20%)
-4. GET /prepare/add-liquidity?from=<address>&pool=<pool>&token0=<t0>&token1=<t1>
+3. If the user gave a token pair/strategy/yield question instead of a pool address:
+     GET /state/pools?tokenA=<symbol>&tokenB=<symbol>[&liquidityType=<type>][&days=30]
+     → choose the matching pool, or ask the user if multiple pools remain
+4. Confirm: selected pool, token pair, amounts, price range (or default ±20%)
+5. GET /prepare/add-liquidity?from=<address>&pool=<pool>&token0=<t0>&token1=<t1>
        &decimals0=<d0>&decimals1=<d1>&amount0=<a0>&amount1=<a1>
        [&priceLower=<p>&priceUpper=<p>]
      → show position.tickLower, tickUpper, amount0, amount1 to user before proceeding
-5. send_calls(chain="base", calls from transactions[])
-6. get_request_status(requestId) — poll automatically until success or failed
+6. send_calls(chain="base", calls from transactions[])
+7. get_request_status(requestId) — poll automatically until success or failed
+```
+
+### Find best-yield LP pool
+
+```
+1. GET /state/pools?days=30&limit=1000[&liquidityType=integral]
+     → for each pool with tvlUsd >= 10000, estimate feeAPY = (feesUsd / tvlUsd) × 12 × 100
+     → rank by feeAPY; show top candidates with pair, liquidityType, TVL, feesUsd, feeAPY
+2. If the user picks a pool, continue with Add liquidity orchestration from step 4
 ```
 
 ### Remove liquidity (exit a position)
@@ -351,15 +418,32 @@ Pass all transactions in a single `calls` array — Base MCP executes them atomi
 **"Add liquidity to the USDC/ETH pool on Hydrex — 100 USDC and 0.04 ETH"**
 1. `get_wallets` → wallet address
 2. `GET /state/positions?address=<address>` → existing position context
-3. Confirm pool address; default price range to ±20% of current price and inform user of the range used
-4. `GET /prepare/add-liquidity?from=<address>&pool=<pool>&token0=<USDC>&token1=<WETH>&decimals0=6&decimals1=18&amount0=100&amount1=0.04`
-5. Show returned `position` (tickLower, tickUpper, amounts) to user
-6. `send_calls(chain="base", calls=[approve-token0, approve-token1, mint])`
+3. `GET /state/pools?tokenA=USDC&tokenB=WETH`
+4. If one pool clearly matches, use it; otherwise show matching pools by liquidityType, fee, TVL, and pool address
+5. Confirm selected pool; default price range to ±20% of current price and inform user of the range used
+6. `GET /prepare/add-liquidity?from=<address>&pool=<pool>&token0=<USDC>&token1=<WETH>&decimals0=6&decimals1=18&amount0=100&amount1=0.04`
+7. Show returned `position` (tickLower, tickUpper, amounts) to user
+8. `send_calls(chain="base", calls=[approve-token0, approve-token1, mint])`
+9. Poll `get_request_status` → report outcome
+
+**"Deposit into the HYDX/USDC manual strategy"**
+1. `get_wallets` → wallet address
+2. `GET /state/pools?tokenA=HYDX&tokenB=USDC&liquidityType=integral`
+3. Use the returned pool's `pool`, `token0.address`, `token1.address`, `token0.decimals`, and `token1.decimals`
+4. Confirm selected pool and ask for any missing paired-token amount or price range
+5. `GET /prepare/add-liquidity?...`
+6. `send_calls(chain="base", calls from transactions[])`
 7. Poll `get_request_status` → report outcome
+
+**"Which Hydrex pool has the best yield right now?"**
+1. `GET /state/pools?days=30&limit=1000&liquidityType=integral`
+2. Rank pools with TVL ≥ $10k by estimated fee APY from `feesUsd` and `tvlUsd`
+3. Present top options with pair, TVL, 30d fees, and estimated fee APY; note emissions are excluded
+4. If the user wants to deposit, continue with Add liquidity orchestration
 
 **"Remove 50% of liquidity from Hydrex position #12345"** *(chat-only surface fallback)*
 1. `get_wallets` → wallet address
-2. `web_request` cannot reach `localhost:3000` → construct the full URL and ask the user to open it in a browser and paste the JSON response into chat
+2. `web_request` cannot reach `2.25.190.100:3000` → construct the full URL and ask the user to open it in a browser and paste the JSON response into chat
 3. On receiving JSON, `send_calls(chain="base", calls from transactions[])`
 4. Poll `get_request_status` → report outcome
 
@@ -378,7 +462,7 @@ Pass all transactions in a single `calls` array — Base MCP executes them atomi
 | WETH | `0x4200000000000000000000000000000000000006` | 18 |
 | ETH (native) | Use the `value` field; no `tokenIn` address needed | 18 |
 
-For other tokens, look up the address via `GET /state/quote` error messages or ask the user to supply the contract address.
+For LP actions, resolve token symbols and pool addresses via `GET /state/pools`. For swaps, use well-known addresses above or ask the user to supply the contract address — `/state/pools` returns empty for tokens with no Hydrex LP pool.
 
 ### Error handling
 
@@ -386,12 +470,14 @@ For other tokens, look up the address via `GET /state/quote` error messages or a
 |---|---|
 | `get_wallets` returns no wallet | Tell user to connect their Base Account and retry |
 | `/state/quote` returns `priceImpact > 5%` | Warn user; require confirmation before proceeding |
+| `/state/pools` returns `count: 0` | Token pair has no indexed Hydrex LP pool; for swaps use `/state/quote`, for LP ask user for pool address or a different pair |
 | Prepare endpoint returns `ok: false` | Surface the `error` field; do not call `send_calls` |
 | `send_calls` approval rejected | Inform user the transaction was cancelled; offer to retry |
 | `get_request_status` shows failure | Parse the failure reason and suggest next steps |
 
 ### Liquidity notes
 
+- Use `GET /state/pools` to resolve token symbols → pool address + token metadata before add-liquidity.
 - Adding liquidity creates a concentrated liquidity position that earns fees and rewards immediately — no separate gauge deposit step is required.
 - Removing liquidity fully exits the position and returns both tokens to the wallet.
 - The `positionId` is the NFT tokenId from the NonfungiblePositionManager; always fetch current positions via `/state/positions` before a remove.
